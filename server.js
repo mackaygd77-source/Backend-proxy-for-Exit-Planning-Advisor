@@ -108,22 +108,33 @@ app.post('/api/fetch-url', async (req, res) => {
         return res.status(403).json({ error: 'Private/internal URLs are not allowed' });
 
     try {
-        const response = await fetch(parsed.toString(), {
-            headers: {
-                'User-Agent':      'Mozilla/5.0 (compatible; ExitPathBot/1.0)',
-                'Accept':          'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-            },
-            timeout: 15000,
-            follow:  5,
-        });
+        // node-fetch v2: use AbortController for timeout (the 'timeout' option is not reliable)
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
 
-        if (!response.ok)
+        let response;
+        try {
+            response = await fetch(parsed.toString(), {
+                signal: controller.signal,
+                headers: {
+                    'User-Agent':      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cache-Control':   'no-cache',
+                },
+            });
+        } finally {
+            clearTimeout(timer);
+        }
+
+        if (!response.ok) {
+            console.error(`[fetch-url] ${host} returned ${response.status}`);
             return res.status(502).json({ error: `Site returned HTTP ${response.status}` });
+        }
 
+        // Accept any content — some sites return wrong content-type headers
         const ct = response.headers.get('content-type') || '';
-        if (!ct.includes('text/html') && !ct.includes('text/plain'))
-            return res.status(415).json({ error: 'URL does not return HTML content' });
+        console.log(`[fetch-url] ${host} status=200 content-type="${ct}"`);
 
         const $ = cheerio.load(await response.text());
 
@@ -151,8 +162,8 @@ app.post('/api/fetch-url', async (req, res) => {
         res.json({ text, title, url: parsed.toString(), truncated });
 
     } catch (err) {
-        if (err.type === 'request-timeout')
-            return res.status(504).json({ error: 'Timed out after 15s' });
+        if (err.name === 'AbortError')
+            return res.status(504).json({ error: 'Timed out after 15s — site too slow' });
         console.error('[fetch-url]', err.message);
         res.status(502).json({ error: 'Failed to fetch URL: ' + err.message });
     }
